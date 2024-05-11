@@ -1,5 +1,5 @@
 # Self-collaboration Code Generation via ChatGPT
-[**Paper**](https://arxiv.org/abs/2304.07590)
+[**Paper**](https://arxiv.org/abs/2304.07590) (Accepted to TOSEM)
 
 ## Run code
 ```bash
