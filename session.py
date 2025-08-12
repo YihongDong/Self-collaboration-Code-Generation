@@ -5,8 +5,8 @@ from utils import code_truncate
 
 
 class Session(object):
-    def __init__(self, TEAM, ANALYST, PYTHON_DEVELOPER, TESTER, requirement, model='gpt-3.5-turbo-0301', majority=1, max_tokens=512,
-                                temperature=0.0, top_p=1.0, max_round=4, before_func=''):
+    def __init__(self, TEAM, ANALYST, PYTHON_DEVELOPER, TESTER, requirement, model='gpt-3.5-turbo', majority=1, max_tokens=512,
+                                temperature=0.0, top_p=0.95, max_round=4, before_func=''):
 
         self.session_history = {}
         self.max_round = max_round

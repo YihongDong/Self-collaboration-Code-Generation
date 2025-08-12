@@ -10,8 +10,8 @@ from utils import code_truncate, construct_system_message
 
 
 class Analyst(object):
-    def __init__(self, TEAM, ANALYST, requirement, model='gpt-3.5-turbo-0301', majority=1, max_tokens=512,
-                                temperature=0.0, top_p=1.0):
+    def __init__(self, TEAM, ANALYST, requirement, model='gpt-3.5-turbo', majority=1, max_tokens=512,
+                                temperature=0.0, top_p=0.95):
         self.model = model
         self.majority = majority
         self.max_tokens = max_tokens
