@@ -1,7 +1,7 @@
 # Self-collaboration Code Generation via ChatGPT
 [![arXiv](https://img.shields.io/badge/arXiv-2304.07590-b31b1b.svg)](https://arxiv.org/abs/2304.07590)
 
-The first LLM-based agent for code generation and software engineering, released in April 2023, has been accepted to TOSEM.
+The first LLM-based agent for (Function-Level and Project-Level) code generation in software engineering, released in April 2023, has been accepted to TOSEM.
 
 ### Function-Level Generation 
 ```bash
