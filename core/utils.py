@@ -134,6 +134,14 @@ def construct_system_message(requirement, role, team=''):
         system_message = team + '\n '+ \
                     "The requirement from users is: \n{'requirement':\n"  +  "'"+ requirement.replace('\n\n','\n').strip(".") + "'\n}\n\n" + \
                     role
-                
+
     return system_message
+
+def construct_swe_system_message(problem_statement, role, team=''):
+    parts = []
+    if team:
+        parts.append(team.strip())
+    parts.append(role.strip())
+    parts.append("## GitHub Issue to Fix\n\n" + problem_statement.strip())
+    return "\n\n".join(parts)
     

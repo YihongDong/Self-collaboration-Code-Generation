@@ -10,7 +10,8 @@ bash evaluate.sh
 ```
  
 ## Citation
-```
+
+```bibtex
 @article{dong2023self,
   title={Self-collaboration code generation via chatgpt},
   author={Dong, Yihong and Jiang, Xue and Jin, Zhi and Li, Ge},
@@ -18,5 +19,3 @@ bash evaluate.sh
   year={2023}
 }
 ```
-
-

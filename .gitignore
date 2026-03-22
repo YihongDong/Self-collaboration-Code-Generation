@@ -1,0 +1,9 @@
+self-collaboration_paper_tex/
+humaneval_agent_5samples.jsonl
+REVISE_OUTERLINE.md
+smoke_test.py
+opencode/
+backup/
+swe_workdir/
+humaneval_workdir/
+.env
