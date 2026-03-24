@@ -7,3 +7,5 @@ backup/
 swe_workdir/
 humaneval_workdir/
 .env
+logs/
+SWE-bench/

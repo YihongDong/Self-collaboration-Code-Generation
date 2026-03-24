@@ -276,8 +276,25 @@ def _safe_resolve(repo_path, file_path):
     return resolved
 
 
-def _exec_read_file(args, repo_path):
+def _exec_read_file(args, repo_path, container_id=None):
     path = args["path"]
+    if container_id:
+        # Normalize: strip leading / or /testbed/ prefix if agent passes absolute path
+        clean = path.lstrip("/")
+        if clean.startswith("testbed/"):
+            clean = clean[len("testbed/"):]
+        full_path = f"/testbed/{clean}"
+        result = subprocess.run(
+            ["docker", "exec", container_id, "cat", "-n", full_path],
+            capture_output=True, text=True, timeout=10,
+        )
+        if result.returncode != 0:
+            return f"Error: file not found: {path}"
+        lines = result.stdout.split("\n")
+        start = args.get("start_line", 1)
+        end = args.get("end_line", len(lines))
+        return "\n".join(lines[max(0, start-1):end])
+
     full = _safe_resolve(repo_path, path)
     if not full or not os.path.isfile(full):
         return f"Error: file not found: {path}"
@@ -296,10 +313,36 @@ def _exec_read_file(args, repo_path):
     return "\n".join(numbered)
 
 
-def _exec_edit_file(args, repo_path):
+def _exec_edit_file(args, repo_path, container_id=None):
     path = args["path"]
     old_string = args["old_string"]
     new_string = args["new_string"]
+
+    if container_id:
+        clean = path.lstrip("/")
+        if clean.startswith("testbed/"):
+            clean = clean[len("testbed/"):]
+        full_path = f"/testbed/{clean}"
+        result = subprocess.run(
+            ["docker", "exec", container_id, "cat", full_path],
+            capture_output=True, text=True, timeout=10,
+        )
+        if result.returncode != 0:
+            return f"Error: file not found: {path}"
+        content = result.stdout
+        count = content.count(old_string)
+        if count == 1:
+            new_content = content.replace(old_string, new_string, 1)
+            write_result = subprocess.run(
+                ["docker", "exec", "-i", container_id, "tee", full_path],
+                input=new_content, capture_output=True, text=True, timeout=10,
+            )
+            if write_result.returncode != 0:
+                return f"Error: failed to write {path}: {write_result.stderr.strip()}"
+            return f"Successfully edited {path}"
+        elif count > 1:
+            return f"Error: old_string matches {count} locations in {path}. Provide more context."
+        return f"Error: old_string not found in {path}."
 
     full = _safe_resolve(repo_path, path)
     if not full or not os.path.isfile(full):
@@ -348,10 +391,9 @@ _SEARCH_GLOBS = ["*.py", "*.js", "*.ts", "*.jsx", "*.tsx", "*.java",
                   "*.yaml", "*.yml", "*.toml", "*.cfg", "*.ini", "*.json"]
 
 
-def _exec_search(args, repo_path):
+def _exec_search(args, repo_path, container_id=None):
     pattern = args["pattern"]
     file_glob = args.get("file_glob", "")
-    # If no glob specified, search common code + config file types
     if not file_glob:
         include_args = []
         for g in _SEARCH_GLOBS:
@@ -359,13 +401,17 @@ def _exec_search(args, repo_path):
     else:
         include_args = ["--include", file_glob]
     try:
-        result = subprocess.run(
-            ["grep", "-rn"] + include_args + [pattern, "."],
-            cwd=repo_path,
-            capture_output=True,
-            text=True,
-            timeout=30,
-        )
+        if container_id:
+            grep_cmd = "grep -rn " + " ".join(include_args) + f" '{pattern}' ."
+            result = subprocess.run(
+                ["docker", "exec", "-w", "/testbed", container_id, "bash", "-c", grep_cmd],
+                capture_output=True, text=True, timeout=30,
+            )
+        else:
+            result = subprocess.run(
+                ["grep", "-rn"] + include_args + [pattern, "."],
+                cwd=repo_path, capture_output=True, text=True, timeout=30,
+            )
         output = result.stdout
         lines = output.split("\n")
         if len(lines) > 100:
@@ -377,18 +423,20 @@ def _exec_search(args, repo_path):
         return f"Error: {e}"
 
 
-def _exec_bash(args, repo_path):
+def _exec_bash(args, repo_path, container_id=None):
     command = args["command"]
     timeout = args.get("timeout", 120)
     try:
-        result = subprocess.run(
-            command,
-            shell=True,
-            cwd=repo_path,
-            capture_output=True,
-            text=True,
-            timeout=timeout,
-        )
+        if container_id:
+            result = subprocess.run(
+                ["docker", "exec", "-w", "/testbed", container_id, "bash", "-c", command],
+                capture_output=True, text=True, timeout=timeout,
+            )
+        else:
+            result = subprocess.run(
+                command, shell=True, cwd=repo_path,
+                capture_output=True, text=True, timeout=timeout,
+            )
         output = result.stdout + result.stderr
         if len(output) > 8000:
             output = output[:4000] + "\n...(truncated)...\n" + output[-4000:]
@@ -672,19 +720,20 @@ class BaseAgent:
     def __init__(self, config, system_prompt, repo_path,
                  tool_schemas=None, max_steps=30, verbose=True,
                  nudge_at=None, nudge_message=None,
-                 restrict_at=None, restrict_to=None):
+                 restrict_at=None, restrict_to=None,
+                 container_id=None):
         self.config = config
         self.system_prompt = system_prompt
         self.repo_path = repo_path
         self.tool_schemas = tool_schemas or ALL_TOOLS
         self.max_steps = max_steps
         self.verbose = verbose
-        # Phase-specific nudge: inject nudge_message after nudge_at steps
         self.nudge_at = nudge_at
         self.nudge_message = nudge_message
         # Progressive restriction: at restrict_at steps, limit actions to restrict_to
         self.restrict_at = restrict_at
         self.restrict_to = restrict_to
+        self.container_id = container_id
 
     def _execute(self, name, args):
         """Execute an action and return the result string."""
@@ -698,6 +747,10 @@ class BaseAgent:
         if not executor:
             return f"Error: unknown action '{name}'"
         try:
+            import inspect
+            sig = inspect.signature(executor)
+            if "container_id" in sig.parameters:
+                return executor(args, self.repo_path, container_id=self.container_id)
             return executor(args, self.repo_path)
         except Exception as e:
             return f"Error executing {name}: {e}"
@@ -965,13 +1018,15 @@ class SelfCollabSession:
     """
 
     def __init__(self, config, repo_path, max_round=3,
-                 analyst_steps=10, coder_steps=15, verbose=True):
+                 analyst_steps=10, coder_steps=15, verbose=True,
+                 container_id=None):
         self.config = config
         self.repo_path = repo_path
         self.max_round = max_round
         self.analyst_steps = analyst_steps
         self.coder_steps = coder_steps
         self.verbose = verbose
+        self.container_id = container_id
 
     def run(self, task_description, test_cmd=None):
         """Run the full self-collaboration loop.
@@ -1003,6 +1058,7 @@ class SelfCollabSession:
             nudge_message="You are running low on steps. Call `done` NOW with your analysis as JSON:\n{\"reasoning\": \"...\", \"files\": [{\"path\": \"file.py\", \"reason\": \"...\"}]}",
             restrict_at=self.analyst_steps - 3,
             restrict_to={"read_file", "done"},
+            container_id=self.container_id,
         )
         analyst_result = analyst.run(task_description)
 
@@ -1077,14 +1133,21 @@ class SelfCollabSession:
                 verbose=self.verbose,
                 nudge_at=self.coder_steps - 5,
                 nudge_message="You are running low on steps. Use `edit_file` NOW to make the fix, then call `done`.",
+                container_id=self.container_id,
             )
             coder_result = coder.run(coder_task)
 
             # Capture what the Coder changed (for context in next round)
-            diff_result = subprocess.run(
-                ["git", "diff"], cwd=self.repo_path,
-                capture_output=True, text=True,
-            )
+            if self.container_id:
+                diff_result = subprocess.run(
+                    ["docker", "exec", "-w", "/testbed", self.container_id, "git", "diff"],
+                    capture_output=True, text=True,
+                )
+            else:
+                diff_result = subprocess.run(
+                    ["git", "diff"], cwd=self.repo_path,
+                    capture_output=True, text=True,
+                )
             prev_diff = diff_result.stdout
             prev_coder_messages = coder._messages
 
@@ -1107,10 +1170,16 @@ class SelfCollabSession:
 
             status, output = self._run_tests(test_cmd)
             # Check if there's actually a code change
-            diff_check = subprocess.run(
-                "git diff", shell=True, cwd=self.repo_path,
-                capture_output=True, text=True,
-            )
+            if self.container_id:
+                diff_check = subprocess.run(
+                    ["docker", "exec", "-w", "/testbed", self.container_id, "git", "diff"],
+                    capture_output=True, text=True,
+                )
+            else:
+                diff_check = subprocess.run(
+                    "git diff", shell=True, cwd=self.repo_path,
+                    capture_output=True, text=True,
+                )
             has_diff = bool(diff_check.stdout.strip())
             if not has_diff:
                 status = "failed"
@@ -1147,14 +1216,16 @@ class SelfCollabSession:
         status: 'passed', 'failed', or 'timeout'
         """
         try:
-            result = subprocess.run(
-                test_cmd,
-                shell=True,
-                cwd=self.repo_path,
-                capture_output=True,
-                text=True,
-                timeout=timeout,
-            )
+            if self.container_id:
+                result = subprocess.run(
+                    ["docker", "exec", "-w", "/testbed", self.container_id, "bash", "-c", test_cmd],
+                    capture_output=True, text=True, timeout=timeout,
+                )
+            else:
+                result = subprocess.run(
+                    test_cmd, shell=True, cwd=self.repo_path,
+                    capture_output=True, text=True, timeout=timeout,
+                )
             output = result.stdout + "\n" + result.stderr
             # Detect "test not found" — FAIL_TO_PASS tests may not exist in base repo
             # Only skip if ALL tests errored with "not found" and total_tests > 0
