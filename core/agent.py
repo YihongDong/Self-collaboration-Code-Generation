@@ -566,18 +566,22 @@ def _trim_tool_results(messages, keep_recent=8):
     return result
 
 
-def _extract_test_errors(output, max_chars=1500):
+def _extract_test_errors(output, max_chars=2000):
     """Extract key error lines from verbose test output.
 
-    Returns a compact summary instead of dumping 3000+ chars of raw output.
+    Returns a compact summary with:
+    - Failed test names
+    - Assertion expected vs actual values
+    - Key error messages and tracebacks
     """
     lines = output.split("\n")
     failed_tests = []
     error_lines = []
+    assertion_details = []
     in_traceback = False
     tb_buffer = []
 
-    for line in lines:
+    for i, line in enumerate(lines):
         if re.match(r'^(FAIL|ERROR|FAILED)\b', line):
             failed_tests.append(line.strip())
         elif "FAILED" in line and "::" in line:
@@ -589,6 +593,16 @@ def _extract_test_errors(output, max_chars=1500):
             error_lines.append(line.rstrip())
         elif "raise " in line or "assert " in line:
             error_lines.append(line.rstrip())
+
+        # Capture assertion details: "Expected X" / "Got Y" / "!= " / "AssertionError:"
+        if "AssertionError:" in line and len(line.strip()) > 20:
+            assertion_details.append(line.rstrip())
+        elif line.strip().startswith("- ") and i > 0 and ("Expected" in lines[i-1] or "First diff" in lines[i-1]):
+            assertion_details.append(line.rstrip())
+        elif line.strip().startswith("+ ") and assertion_details:
+            assertion_details.append(line.rstrip())
+        elif "!= " in line and ("'" in line or '"' in line or "[" in line):
+            assertion_details.append(line.rstrip())
 
         if "Traceback (most recent call last):" in line:
             in_traceback = True
@@ -603,6 +617,14 @@ def _extract_test_errors(output, max_chars=1500):
     parts = []
     if failed_tests:
         parts.append("## Failed tests\n" + "\n".join(failed_tests[:5]))
+    if assertion_details:
+        seen = set()
+        unique = []
+        for a in assertion_details:
+            if a.strip() not in seen:
+                seen.add(a.strip())
+                unique.append(a)
+        parts.append("## Assertion details (expected vs actual)\n" + "\n".join(unique[:8]))
     if error_lines:
         seen = set()
         unique = []
@@ -964,15 +986,20 @@ TEAM_CONTEXT = """There is a development team that includes a Localizer (Analyst
 
 ANALYST_PROMPT = TEAM_CONTEXT + """
 
-You are the **Localizer** on this team. Given a GitHub issue description and the repository structure, your task is to analyze the issue and identify which files and functions need to change.
+You are the **Localizer** on this team. Given a GitHub issue description and the repository structure, your task is to analyze the issue and identify ALL locations that need to change.
 
 You have access to: `search`, `read_file`, `bash`, `done`.
 Use whichever actions help you understand the issue — search for keywords, read source code, run commands to inspect state, etc.
 
 When you have identified the root cause, call `done` with a JSON analysis:
-{"reasoning": "...", "files": [{"path": "file.py", "reason": "..."}]}
+{"reasoning": "...", "files": [{"path": "file.py", "reason": "what to change and which line(s)"}]}
 
-IMPORTANT: Your job is ANALYSIS only. Do NOT edit files. Call `done` once you know which files need to change and why.
+IMPORTANT:
+- Your job is ANALYSIS only. Do NOT edit files.
+- Be thorough: trace the code path end-to-end. If a value is case-sensitive in one place, check ALL places it's used.
+- List EVERY location that needs a change, not just the first one you find.
+- Include specific line numbers and what the change should be.
+- Call `done` once you know which files need to change and why.
 """
 
 CODER_PROMPT = TEAM_CONTEXT + """
@@ -988,8 +1015,11 @@ Workflow:
 4. Call `done` when your fix is complete.
 
 Rules:
-- Make the SMALLEST change that correctly fixes the bug.
-- Do NOT refactor or clean up unrelated code.
+- Make the SMALLEST change that correctly fixes the bug. Aim for 1-10 lines changed.
+- Do NOT write new functions, classes, or methods unless absolutely necessary.
+- Do NOT refactor, rewrite, or clean up existing code.
+- Do NOT modify files unrelated to the bug (e.g. setup.py, pyproject.toml, configs).
+- Prefer modifying existing logic over replacing it entirely.
 - Always read a file before editing it so you can copy exact text for old_string.
 """
 

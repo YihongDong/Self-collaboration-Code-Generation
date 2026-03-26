@@ -323,7 +323,29 @@ def run_instance_docker(instance, config, run_id, safe_model_name,
         )
         history, analyst_result, coder_result = session.run(task, test_cmd=test_cmd)
 
-        # 6. Extract patch
+        # 6. Extract patch — only keep changes to files identified by Analyst
+        #    Revert unrelated modifications to avoid side-effect pollution
+        _, changed_files = exec_in(cid, "git diff --name-only", timeout=10)
+        changed = [f.strip() for f in changed_files.strip().split("\n") if f.strip()]
+        if analyst_result and changed:
+            # Parse analyst's target files from JSON result
+            target_files = set()
+            try:
+                parsed = json.loads(analyst_result)
+                for f in parsed.get("files", []):
+                    p = f.get("path", "").lstrip("./")
+                    if p:
+                        target_files.add(p)
+            except (json.JSONDecodeError, TypeError):
+                pass
+
+            if target_files:
+                unrelated = [f for f in changed if f not in target_files]
+                if unrelated and verbose:
+                    print(f"  Reverting {len(unrelated)} unrelated file(s): {', '.join(unrelated[:3])}")
+                for f in unrelated:
+                    exec_in(cid, f"git checkout -- {shlex.quote(f)}", timeout=5)
+
         _, patch = exec_in(cid, "git diff", timeout=10)
 
         if not patch.strip():
@@ -381,6 +403,8 @@ def main():
     parser.add_argument("--model", type=str, default=None)
     parser.add_argument("--instance_ids", type=str, nargs="+", default=None)
     parser.add_argument("--timeout", type=int, default=300)
+    parser.add_argument("--retries", type=int, default=1,
+                        help="Max attempts per instance (retry on no-patch or failed)")
     parser.add_argument("--arch", type=str, default=None,
                         help="Image architecture override (default: auto-detect)")
     parser.add_argument("--quiet", action="store_true")
@@ -436,11 +460,27 @@ def main():
     Path(args.output_path).parent.mkdir(parents=True, exist_ok=True)
     with open(args.output_path, "w") as f:
         for instance in tqdm.tqdm(available, desc="Instances"):
-            iid, resolved, patch, grading = run_instance_docker(
-                instance, config, run_id, safe_model_name,
-                max_round=args.max_round, max_steps=args.max_steps,
-                timeout=args.timeout, verbose=not args.quiet,
-            )
+            best = (instance["instance_id"], False, "", "skipped")
+            for attempt in range(args.retries):
+                if attempt > 0:
+                    print(f"  Retry {attempt + 1}/{args.retries}...")
+                iid, resolved, patch, grading = run_instance_docker(
+                    instance, config, run_id, safe_model_name,
+                    max_round=args.max_round, max_steps=args.max_steps,
+                    timeout=args.timeout, verbose=not args.quiet,
+                )
+                # Keep best result: resolved > has_patch > nothing
+                if resolved:
+                    best = (iid, resolved, patch, grading)
+                    break
+                elif patch.strip() and not best[2].strip():
+                    best = (iid, resolved, patch, grading)
+                # If resolved or got a patch, might still retry for a better one
+                if not patch.strip() and attempt < args.retries - 1:
+                    continue
+                break
+
+            iid, resolved, patch, grading = best
             results.append((iid, resolved, grading))
             if patch.strip():
                 f.write(json.dumps({
