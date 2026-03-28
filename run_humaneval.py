@@ -4,7 +4,7 @@ HumanEval runner using Self-Collaboration agent.
 Self-collaboration pattern:
 - Analyst: decomposes the requirement into a plan
 - Coder: implements code based on the plan
-- Tester: tests the code, feeds errors back to Coder
+- Tester: generates test cases from the prompt (NOT using private test suite)
 - Iterative Coder ↔ Tester loop
 
 Uses write_file + bash actions for code generation and testing.
@@ -25,7 +25,7 @@ from core.agent import ToolAgent as BaseAgent, HUMANEVAL_TOOL_SCHEMAS
 from core.utils import prompt_split_humaneval, find_method_name
 
 # ---------------------------------------------------------------------------
-# Role-specific system prompts (parallel to roles/rule_descriptions_actc.py)
+# Role-specific system prompts
 # ---------------------------------------------------------------------------
 
 TEAM_CONTEXT = """There is a development team that includes a requirement analyst, a Python developer, and a tester. The team needs to develop programs that satisfy the requirement of the users. The different roles have different divisions of labor and need to cooperate with each others."""
@@ -58,6 +58,17 @@ Rules:
 - Test your code before calling done
 """
 
+TESTER_PROMPT = TEAM_CONTEXT + """
+
+You are the **Tester** on this team. You will receive the code written by the developer, and your job is:
+1. Write test code that starts with "def check(candidate):" where candidate is a function object.
+2. Call candidate with different inputs (up to five) that start with "print", and do not write assert statements.
+
+Remember, you only need to provide the test code in Python and avoid using assert statements.
+"""
+
+TESTER_INSTRUCTION = "The code provided by developer is as follows:\n{code}\n"
+
 TESTER_FEEDBACK = """
 The report from the Tester is as follows:
 
@@ -71,7 +82,6 @@ def run_task(task, config, work_dir, max_round=2, max_steps=10, verbose=True):
     """Run self-collaboration on a single HumanEval task. Returns the generated code."""
     task_id = task["task_id"]
     prompt = task["prompt"]
-    test_code = task["test"]
     entry_point = task["entry_point"]
 
     # Create a working directory for this task
@@ -146,7 +156,7 @@ The function name must be `{entry_point}`."""
             break
 
         # =================================================================
-        # TESTER phase — deterministic execution
+        # TESTER phase — LLM generates tests from prompt (not private tests)
         # =================================================================
         if verbose:
             print(f"  === Round {round_idx + 1}/{max_round}: Tester ===", end="", flush=True)
@@ -161,8 +171,19 @@ The function name must be `{entry_point}`."""
             )
             continue
 
-        # Run the actual test suite
-        passed, output = _run_test(task_dir, test_code, entry_point)
+        with open(solution_path, "r") as f:
+            code = f.read()
+
+        # Ask LLM Tester to generate test cases from the code + prompt
+        tester_test_code = _generate_tests(config, requirement, code)
+
+        if not tester_test_code:
+            if verbose:
+                print(" tester produced no tests")
+            continue
+
+        # Execute the LLM-generated tests
+        passed, output = _run_generated_test(task_dir, tester_test_code, entry_point)
 
         if verbose:
             print(f" {'PASSED' if passed else 'FAILED'}")
@@ -186,9 +207,44 @@ The function name must be `{entry_point}`."""
     return code
 
 
-def _run_test(task_dir, test_code, entry_point, timeout=30):
-    """Run HumanEval tests deterministically. Returns (passed, output)."""
-    # Write test runner that imports solution and runs the test
+def _generate_tests(config, requirement, code):
+    """Ask LLM Tester to generate test cases from the prompt and code.
+
+    Returns the test code string (def check(candidate): ...) or empty string.
+    """
+    tester_messages = [
+        {"role": "system", "content": TESTER_PROMPT},
+        {"role": "user", "content": (
+            f"## Requirement\n{requirement}\n\n"
+            f"{TESTER_INSTRUCTION.format(code=code)}"
+        )},
+    ]
+
+    try:
+        response = call_llm_with_tools(tester_messages, config, tools=None)
+        test_code = response.choices[0].message.content or ""
+
+        # Extract code from markdown blocks if present
+        if "```python" in test_code:
+            start = test_code.index("```python") + len("```python")
+            end = test_code.index("```", start)
+            test_code = test_code[start:end].strip()
+        elif "```" in test_code:
+            start = test_code.index("```") + 3
+            end = test_code.index("```", start)
+            test_code = test_code[start:end].strip()
+
+        # Validate it contains check function
+        if "def check" not in test_code:
+            return ""
+
+        return test_code
+    except Exception:
+        return ""
+
+
+def _run_generated_test(task_dir, test_code, entry_point, timeout=30):
+    """Run LLM-generated tests. Returns (passed, output)."""
     test_script = f"""
 import sys
 sys.path.insert(0, '.')

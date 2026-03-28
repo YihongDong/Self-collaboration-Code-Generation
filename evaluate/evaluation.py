@@ -7,7 +7,7 @@ from collections import defaultdict
 import logging
 from typing import List, Union
 import itertools
-from utils import build_test_method
+from core.utils import build_test_method
 
 logging.basicConfig(
     format="SystemLog: [%(asctime)s][%(name)s][%(levelname)s] - %(message)s",

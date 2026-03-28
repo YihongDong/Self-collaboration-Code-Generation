@@ -9,3 +9,8 @@ humaneval_workdir/
 .env
 logs/
 SWE-bench/
+humaneval_output.jsonl
+kimi-cli/
+OpenCode_vs_SelfCollaboration_Analysis.md
+IMPLEMENTATION_PLAN.md
+self-collaboration agent/

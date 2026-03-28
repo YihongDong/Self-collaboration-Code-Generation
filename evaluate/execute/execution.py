@@ -9,8 +9,9 @@ if platform.system() == 'Linux':
 from collections import defaultdict
 from concurrent.futures import as_completed, ProcessPoolExecutor
 import logging
+import multiprocessing as mp
 
-from execute._execution import check_correctness, check_correctness_with_test_cases, check_correctness_T
+from evaluate.execute._execution import check_correctness, check_correctness_with_test_cases, check_correctness_T
 
 logging.basicConfig(
     format="SystemLog: [%(asctime)s][%(name)s][%(levelname)s] - %(message)s",
@@ -20,13 +21,20 @@ logging.basicConfig(
 
 logger = logging.getLogger(__name__)
 
+
+def _executor_kwargs():
+    # On macOS, spawn requires picklable callables and breaks this evaluator's local closures.
+    if platform.system() in ('Darwin', 'Linux'):
+        return {'mp_context': mp.get_context('fork')}
+    return {}
+
 def evaluate_with_test_code(
     samples,
     timeout
 ):
     # logger.info(f'Start evaluation with test code, timeout={timeout}')
     # Check the generated samples against test suites.
-    with ProcessPoolExecutor() as executor:
+    with ProcessPoolExecutor(**_executor_kwargs()) as executor:
 
         futures = []
         existed_completion = defaultdict(set)
@@ -73,7 +81,7 @@ def evaluate_with_test_cases(
 ):
     # logger.info(f'Start evaluation with test cases, timeout={timeout}, limit={limit}')
     # Check the generated solutions against test suites.
-    with ProcessPoolExecutor() as executor:
+    with ProcessPoolExecutor(**_executor_kwargs()) as executor:
         futures = []
         results_list = []
         existed_completion = defaultdict(set)
@@ -111,7 +119,7 @@ def evaluate_with_test_code_T(
 ):
     # logger.info(f'Start evaluation with test code, timeout={timeout}')
     # Check the generated samples against test suites.
-    with ProcessPoolExecutor() as executor:
+    with ProcessPoolExecutor(**_executor_kwargs()) as executor:
 
         futures = []
         existed_completion = defaultdict(set)
